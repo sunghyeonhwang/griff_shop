@@ -2,9 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
 
 // ─── DB 연결 ───────────────────────────────────────
 const pool = new Pool({
@@ -56,6 +58,27 @@ function adminMiddleware(req, res, next) {
   }
   next();
 }
+
+// ─── 파일 업로드 설정 (multer) ──────────────────────
+const uploadsDir = path.join(__dirname, 'public', 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadsDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `hero-${Date.now()}${ext}`);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = /\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)$/i;
+    if (allowed.test(path.extname(file.originalname))) cb(null, true);
+    else cb(new Error('지원하지 않는 파일 형식입니다.'));
+  },
+});
 
 // ─── Express 초기화 ────────────────────────────────
 const app = express();
@@ -906,6 +929,33 @@ paymentsRouter.get('/:orderId', authMiddleware, async (req, res, next) => {
 
 app.use('/api/payments', paymentsRouter);
 
+// ─── 히어로 설정 (JSON 파일 기반) ─────────────────────
+const heroSettingsPath = path.join(__dirname, 'data', 'hero-settings.json');
+const dataDir = path.join(__dirname, 'data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+function getHeroSettings() {
+  try {
+    if (fs.existsSync(heroSettingsPath)) {
+      return JSON.parse(fs.readFileSync(heroSettingsPath, 'utf-8'));
+    }
+  } catch {}
+  return {
+    mediaType: 'image',
+    mediaUrl: 'https://images.unsplash.com/photo-1441986300917-64674bd600d8?w=1920&q=80',
+    overlayOpacity: 60,
+  };
+}
+
+function saveHeroSettings(settings) {
+  fs.writeFileSync(heroSettingsPath, JSON.stringify(settings, null, 2));
+}
+
+// 공개 API: 히어로 설정 조회
+app.get('/api/hero-settings', (_req, res) => {
+  res.json(getHeroSettings());
+});
+
 // --- /api/admin --- (관리자 전용, JWT + role=admin 필수)
 const adminRouter = express.Router();
 adminRouter.use(authMiddleware);
@@ -1254,6 +1304,46 @@ adminRouter.put('/orders/:id/status', async (req, res, next) => {
 
     res.json({ message: '주문 상태가 변경되었습니다.', order: rows[0] });
   } catch (err) { next(err); }
+});
+
+// ── 히어로 설정 관리 ───────────────────────────────
+adminRouter.get('/hero-settings', (_req, res) => {
+  res.json(getHeroSettings());
+});
+
+adminRouter.put('/hero-settings', (req, res) => {
+  try {
+    const { mediaType, mediaUrl, overlayOpacity } = req.body;
+    const current = getHeroSettings();
+    const updated = {
+      mediaType: mediaType || current.mediaType,
+      mediaUrl: mediaUrl || current.mediaUrl,
+      overlayOpacity: overlayOpacity !== undefined ? Number(overlayOpacity) : current.overlayOpacity,
+    };
+    saveHeroSettings(updated);
+    res.json({ message: '히어로 설정이 저장되었습니다.', settings: updated });
+  } catch (err) {
+    res.status(500).json({ error: '설정 저장에 실패했습니다.' });
+  }
+});
+
+adminRouter.post('/hero-upload', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+    const fileUrl = `/uploads/${req.file.filename}`;
+    const ext = path.extname(req.file.filename).toLowerCase();
+    const videoExts = ['.mp4', '.webm', '.mov'];
+    const mediaType = videoExts.includes(ext) ? 'video' : 'image';
+
+    const settings = getHeroSettings();
+    settings.mediaType = mediaType;
+    settings.mediaUrl = fileUrl;
+    saveHeroSettings(settings);
+
+    res.json({ message: '파일 업로드 완료', fileUrl, mediaType, settings });
+  } catch (err) {
+    res.status(500).json({ error: '파일 업로드에 실패했습니다.' });
+  }
 });
 
 app.use('/api/admin', adminRouter);

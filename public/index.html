@@ -825,19 +825,47 @@
     function HomePage() {
       const [products, setProducts] = useState([]);
       const [loading, setLoading] = useState(true);
+      const [heroSettings, setHeroSettings] = useState(null);
 
       useEffect(() => {
         api.get('/products?limit=8&sort=newest')
           .then(data => setProducts(data.products || []))
           .catch(() => {})
           .finally(() => setLoading(false));
+
+        fetch('/api/hero-settings')
+          .then(r => r.json())
+          .then(setHeroSettings)
+          .catch(() => {});
       }, []);
+
+      const overlayOpacity = heroSettings?.overlayOpacity ?? 60;
 
       return (
         <div className="animate-fade-in">
           {/* 히어로 */}
-          <section className="relative bg-brand-900 text-white overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-br from-brand-950 via-brand-900 to-brand-800" />
+          <section className="relative bg-brand-900 text-white overflow-hidden min-h-[480px] lg:min-h-[600px]">
+            {/* 배경 미디어 */}
+            {heroSettings?.mediaUrl && heroSettings.mediaType === 'video' ? (
+              <video
+                key={heroSettings.mediaUrl}
+                autoPlay muted loop playsInline
+                className="absolute inset-0 w-full h-full object-cover"
+              >
+                <source src={heroSettings.mediaUrl} />
+              </video>
+            ) : heroSettings?.mediaUrl && heroSettings.mediaType === 'image' ? (
+              <img
+                src={heroSettings.mediaUrl}
+                alt=""
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+            ) : null}
+            {/* 오버레이 */}
+            <div
+              className="absolute inset-0 bg-brand-950"
+              style={{ opacity: overlayOpacity / 100 }}
+            />
             <div className="relative max-w-[1280px] mx-auto px-6 py-24 lg:py-36">
               <p className="text-xs tracking-[0.3em] text-brand-400 mb-4">PREMIUM SELECT SHOP</p>
               <h1 className="font-serif text-4xl lg:text-6xl font-semibold leading-tight mb-6">
@@ -3080,6 +3108,7 @@
         { label: '상품 관리', path: '/admin/products' },
         { label: '주문 관리', path: '/admin/orders' },
         { label: '카테고리 관리', path: '/admin/categories' },
+        { label: '히어로 설정', path: '/admin/hero' },
       ];
 
       return (
@@ -3787,6 +3816,230 @@
     }
 
     // ========================================
+    // 관리자 - 히어로 설정
+    // ========================================
+
+    function AdminHeroPage() {
+      const [settings, setSettings] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [saving, setSaving] = useState(false);
+      const [uploading, setUploading] = useState(false);
+      const [linkUrl, setLinkUrl] = useState('');
+      const [linkType, setLinkType] = useState('image');
+      const [overlayOpacity, setOverlayOpacity] = useState(60);
+      const fileInputRef = useRef(null);
+      const { addToast } = useToast();
+
+      useEffect(() => {
+        apiFetch('/admin/hero-settings')
+          .then(data => {
+            setSettings(data);
+            setOverlayOpacity(data.overlayOpacity ?? 60);
+          })
+          .catch(() => {})
+          .finally(() => setLoading(false));
+      }, []);
+
+      const handleFileUpload = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const maxSize = 50 * 1024 * 1024;
+        if (file.size > maxSize) {
+          addToast('파일 크기는 50MB 이하여야 합니다.', 'error');
+          return;
+        }
+
+        setUploading(true);
+        try {
+          const formData = new FormData();
+          formData.append('file', file);
+
+          const token = localStorage.getItem('griff_token');
+          const res = await fetch('/api/admin/hero-upload', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
+            body: formData,
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error);
+
+          setSettings(data.settings);
+          setOverlayOpacity(data.settings.overlayOpacity ?? 60);
+          addToast('파일이 업로드되었습니다.', 'success');
+        } catch (err) {
+          addToast(err.message || '업로드 실패', 'error');
+        } finally {
+          setUploading(false);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      };
+
+      const handleLinkSave = async () => {
+        if (!linkUrl.trim()) {
+          addToast('URL을 입력해주세요.', 'error');
+          return;
+        }
+        setSaving(true);
+        try {
+          const data = await apiFetch('/admin/hero-settings', {
+            method: 'PUT',
+            body: JSON.stringify({ mediaType: linkType, mediaUrl: linkUrl.trim(), overlayOpacity }),
+          });
+          setSettings(data.settings);
+          addToast('링크가 저장되었습니다.', 'success');
+          setLinkUrl('');
+        } catch (err) {
+          addToast(err.message || '저장 실패', 'error');
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      const handleOpacitySave = async () => {
+        setSaving(true);
+        try {
+          const data = await apiFetch('/admin/hero-settings', {
+            method: 'PUT',
+            body: JSON.stringify({ overlayOpacity }),
+          });
+          setSettings(data.settings);
+          addToast('오버레이 설정이 저장되었습니다.', 'success');
+        } catch (err) {
+          addToast(err.message || '저장 실패', 'error');
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      if (loading) return <AdminLayout><Spinner /></AdminLayout>;
+
+      const isVideo = settings?.mediaType === 'video';
+
+      return (
+        <AdminLayout>
+          <div className="animate-fade-in space-y-6">
+            <h2 className="text-lg font-semibold text-brand-900">메인 히어로 설정</h2>
+
+            {/* 현재 미리보기 */}
+            <div className="bg-white border border-brand-100 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-brand-800 mb-3">현재 미리보기</h3>
+              <div className="relative rounded-lg overflow-hidden bg-brand-900" style={{ aspectRatio: '16/7' }}>
+                {settings?.mediaUrl && isVideo ? (
+                  <video
+                    key={settings.mediaUrl}
+                    autoPlay muted loop playsInline
+                    className="absolute inset-0 w-full h-full object-cover"
+                  >
+                    <source src={settings.mediaUrl} />
+                  </video>
+                ) : settings?.mediaUrl ? (
+                  <img
+                    src={settings.mediaUrl}
+                    alt="히어로 배경"
+                    className="absolute inset-0 w-full h-full object-cover"
+                    onError={(e) => { e.target.style.display = 'none'; }}
+                  />
+                ) : null}
+                <div className="absolute inset-0 bg-brand-950" style={{ opacity: overlayOpacity / 100 }} />
+                <div className="relative p-6 flex flex-col justify-center h-full">
+                  <p className="text-[10px] tracking-[0.3em] text-brand-400 mb-2">PREMIUM SELECT SHOP</p>
+                  <p className="font-serif text-xl lg:text-2xl font-semibold text-white leading-tight">
+                    Curated for Your Lifestyle
+                  </p>
+                </div>
+              </div>
+              <div className="mt-2 flex items-center gap-2 text-xs text-brand-400">
+                <span className="inline-block w-2 h-2 rounded-full bg-green-400"></span>
+                {settings?.mediaType === 'video' ? '영상' : '이미지'} | {settings?.mediaUrl || '미설정'}
+              </div>
+            </div>
+
+            {/* 파일 업로드 */}
+            <div className="bg-white border border-brand-100 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-brand-800 mb-3">파일 업로드</h3>
+              <p className="text-xs text-brand-400 mb-3">이미지(JPG, PNG, GIF, WebP) 또는 영상(MP4, WebM, MOV) 파일을 업로드하세요. 최대 50MB</p>
+              <div className="flex items-center gap-3">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  id="hero-file-input"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  className="px-4 py-2 bg-brand-900 text-white text-sm tracking-wider hover:bg-brand-800 transition-colors disabled:opacity-50"
+                >
+                  {uploading ? '업로드 중...' : '파일 선택'}
+                </button>
+                {uploading && <Spinner />}
+              </div>
+            </div>
+
+            {/* URL 링크 입력 */}
+            <div className="bg-white border border-brand-100 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-brand-800 mb-3">URL 링크 입력</h3>
+              <p className="text-xs text-brand-400 mb-3">외부 이미지/영상 URL을 직접 입력할 수 있습니다.</p>
+              <div className="space-y-3">
+                <div className="flex gap-3">
+                  <select
+                    value={linkType}
+                    onChange={(e) => setLinkType(e.target.value)}
+                    className="px-3 py-2 border border-brand-200 rounded text-sm text-brand-700 bg-white"
+                  >
+                    <option value="image">이미지</option>
+                    <option value="video">영상</option>
+                  </select>
+                  <input
+                    type="url"
+                    value={linkUrl}
+                    onChange={(e) => setLinkUrl(e.target.value)}
+                    placeholder="https://example.com/image.jpg"
+                    className="flex-1 px-3 py-2 border border-brand-200 rounded text-sm text-brand-700"
+                  />
+                  <button
+                    onClick={handleLinkSave}
+                    disabled={saving || !linkUrl.trim()}
+                    className="px-4 py-2 bg-brand-900 text-white text-sm tracking-wider hover:bg-brand-800 transition-colors disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {saving ? '저장 중...' : '적용'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 오버레이 투명도 */}
+            <div className="bg-white border border-brand-100 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-brand-800 mb-3">오버레이 투명도</h3>
+              <p className="text-xs text-brand-400 mb-3">배경 위에 덮이는 어두운 오버레이의 투명도를 조절합니다. (0: 투명 ~ 100: 완전 어둡게)</p>
+              <div className="flex items-center gap-4">
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={overlayOpacity}
+                  onChange={(e) => setOverlayOpacity(Number(e.target.value))}
+                  className="flex-1"
+                />
+                <span className="text-sm font-medium text-brand-700 w-12 text-right">{overlayOpacity}%</span>
+                <button
+                  onClick={handleOpacitySave}
+                  disabled={saving}
+                  className="px-4 py-2 bg-brand-900 text-white text-sm tracking-wider hover:bg-brand-800 transition-colors disabled:opacity-50"
+                >
+                  저장
+                </button>
+              </div>
+            </div>
+          </div>
+        </AdminLayout>
+      );
+    }
+
+    // ========================================
     // App
     // ========================================
 
@@ -3817,6 +4070,7 @@
                       <Route path="/admin/products" element={<AdminProductsPage />} />
                       <Route path="/admin/orders" element={<AdminOrdersPage />} />
                       <Route path="/admin/categories" element={<AdminCategoriesPage />} />
+                      <Route path="/admin/hero" element={<AdminHeroPage />} />
                       <Route path="*" element={<NotFoundPage />} />
                     </Routes>
                   </main>
