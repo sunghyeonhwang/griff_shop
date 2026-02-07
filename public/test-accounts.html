@@ -88,25 +88,49 @@
       );
     }
 
-    function AccountCard({ account, onLogin }) {
+    function AccountCard({ account, onCopyToken, onRemove }) {
+      const [showPassword, setShowPassword] = useState(false);
+
       return (
-        <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md transition-shadow">
+        <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md transition-shadow relative group">
+          <button
+            onClick={onRemove}
+            className="absolute top-3 right-3 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+            title="리스트에서 제거"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+
           <div className="flex items-center justify-between mb-3">
             <span className="font-semibold text-gray-900">{account.user.name}</span>
             <RoleBadge role={account.user.role} />
           </div>
           <div className="space-y-1.5 text-sm text-gray-600">
             <div className="flex items-center gap-2">
-              <span className="text-gray-400 w-12">이메일</span>
-              <span className="font-mono text-gray-800">{account.user.email}</span>
+              <span className="text-gray-400 w-14 shrink-0">이메일</span>
+              <span className="font-mono text-gray-800 truncate">{account.user.email}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-gray-400 w-12">ID</span>
+              <span className="text-gray-400 w-14 shrink-0">비밀번호</span>
+              <span className="font-mono text-gray-800">
+                {showPassword ? account.password : '••••••••'}
+              </span>
+              <button
+                onClick={() => setShowPassword(!showPassword)}
+                className="text-xs text-gray-400 hover:text-gray-600 ml-1"
+              >
+                {showPassword ? '숨기기' : '보기'}
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-gray-400 w-14 shrink-0">ID</span>
               <span className="font-mono text-gray-800">{account.user.id}</span>
             </div>
             {account.user.phone && (
               <div className="flex items-center gap-2">
-                <span className="text-gray-400 w-12">전화</span>
+                <span className="text-gray-400 w-14 shrink-0">전화</span>
                 <span className="font-mono text-gray-800">{account.user.phone}</span>
               </div>
             )}
@@ -114,7 +138,7 @@
           <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between">
             <span className="text-xs text-gray-400">JWT 토큰 발급됨</span>
             <button
-              onClick={() => onLogin(account)}
+              onClick={() => onCopyToken(account)}
               className="text-xs text-blue-600 hover:text-blue-800 font-medium hover:underline"
             >
               토큰 복사
@@ -389,6 +413,149 @@
     }
 
     // ========================================
+    // 생성된 계정 리스트 (세션 기반)
+    // ========================================
+
+    function AccountList({ accounts, onCopyToken, onRemove, onClearAll }) {
+      const userAccounts = accounts.filter(a => a.user.role === 'user');
+      const adminAccounts = accounts.filter(a => a.user.role === 'admin');
+
+      return (
+        <section className="bg-white rounded-2xl border-2 border-emerald-200 overflow-hidden">
+          <div className="px-6 py-4 bg-emerald-50 border-b border-emerald-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-emerald-800">
+                  생성된 계정 리스트
+                  <span className="ml-2 text-sm font-normal text-emerald-600">({accounts.length}개)</span>
+                </h2>
+                <p className="text-sm text-emerald-600 mt-0.5">
+                  이 세션에서 생성된 계정 목록입니다. 창을 닫으면 리스트가 초기화됩니다.
+                </p>
+              </div>
+              {accounts.length > 0 && (
+                <button
+                  onClick={onClearAll}
+                  className="text-xs text-red-500 hover:text-red-700 border border-red-300 rounded-md px-3 py-1.5 hover:bg-red-50 transition-colors"
+                >
+                  리스트 비우기
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="p-6">
+            {accounts.length === 0 ? (
+              <div className="text-center py-12">
+                <svg className="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+                <p className="text-gray-400 text-sm">아직 생성된 계정이 없습니다.</p>
+                <p className="text-gray-300 text-xs mt-1">위의 폼 또는 빠른 생성 버튼으로 계정을 만들어보세요.</p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* 요약 테이블 */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200">
+                        <th className="text-left py-2 px-3 text-gray-500 font-medium">#</th>
+                        <th className="text-left py-2 px-3 text-gray-500 font-medium">역할</th>
+                        <th className="text-left py-2 px-3 text-gray-500 font-medium">이메일</th>
+                        <th className="text-left py-2 px-3 text-gray-500 font-medium">비밀번호</th>
+                        <th className="text-left py-2 px-3 text-gray-500 font-medium">이름</th>
+                        <th className="text-left py-2 px-3 text-gray-500 font-medium">ID</th>
+                        <th className="text-right py-2 px-3 text-gray-500 font-medium">동작</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {accounts.map((account, i) => (
+                        <AccountRow
+                          key={`${account.user.id}-${i}`}
+                          index={accounts.length - i}
+                          account={account}
+                          onCopyToken={() => onCopyToken(account)}
+                          onRemove={() => onRemove(i)}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* 카운트 요약 */}
+                <div className="flex gap-4 pt-3 border-t border-gray-100">
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <span className="inline-block w-3 h-3 rounded-full bg-blue-400"></span>
+                    일반유저: {userAccounts.length}명
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <span className="inline-block w-3 h-3 rounded-full bg-red-400"></span>
+                    관리자: {adminAccounts.length}명
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      );
+    }
+
+    function AccountRow({ index, account, onCopyToken, onRemove }) {
+      const [showPw, setShowPw] = useState(false);
+
+      return (
+        <tr className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+          <td className="py-2.5 px-3 text-gray-400 text-xs">{index}</td>
+          <td className="py-2.5 px-3"><RoleBadge role={account.user.role} /></td>
+          <td className="py-2.5 px-3 font-mono text-gray-800 text-xs">{account.user.email}</td>
+          <td className="py-2.5 px-3">
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-gray-800 text-xs">
+                {showPw ? account.password : '••••••'}
+              </span>
+              <button
+                onClick={() => setShowPw(!showPw)}
+                className="text-gray-400 hover:text-gray-600"
+                title={showPw ? '숨기기' : '보기'}
+              >
+                {showPw ? (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </td>
+          <td className="py-2.5 px-3 text-gray-800 text-xs">{account.user.name}</td>
+          <td className="py-2.5 px-3 font-mono text-gray-500 text-xs">{account.user.id}</td>
+          <td className="py-2.5 px-3 text-right">
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={onCopyToken}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium hover:underline"
+              >
+                토큰 복사
+              </button>
+              <button
+                onClick={onRemove}
+                className="text-xs text-red-400 hover:text-red-600"
+                title="리스트에서 제거"
+              >
+                삭제
+              </button>
+            </div>
+          </td>
+        </tr>
+      );
+    }
+
+    // ========================================
     // App
     // ========================================
 
@@ -418,6 +585,15 @@
           navigator.clipboard.writeText(account.token);
           showToast('JWT 토큰이 클립보드에 복사되었습니다.', 'info');
         }
+      };
+
+      const handleRemoveAccount = (index) => {
+        setCreatedAccounts(prev => prev.filter((_, i) => i !== index));
+      };
+
+      const handleClearAll = () => {
+        setCreatedAccounts([]);
+        showToast('리스트가 초기화되었습니다.', 'info');
       };
 
       return (
@@ -453,24 +629,20 @@
               <CreateAccountForm role="admin" onCreated={handleCreated} />
             </section>
 
+            {/* Created Accounts List (세션 기반 - 창 닫으면 사라짐) */}
+            <section className="mb-8">
+              <AccountList
+                accounts={createdAccounts}
+                onCopyToken={handleCopyToken}
+                onRemove={handleRemoveAccount}
+                onClearAll={handleClearAll}
+              />
+            </section>
+
             {/* Login Test */}
             <section className="mb-8">
               <LoginTest />
             </section>
-
-            {/* Created Accounts */}
-            {createdAccounts.length > 0 && (
-              <section>
-                <h2 className="text-xl font-bold text-gray-800 mb-4">
-                  생성된 계정 ({createdAccounts.length}개)
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {createdAccounts.map((account, i) => (
-                    <AccountCard key={i} account={account} onLogin={handleCopyToken} />
-                  ))}
-                </div>
-              </section>
-            )}
 
             {/* API Info */}
             <section className="mt-12 bg-white rounded-2xl border border-gray-200 p-6">
