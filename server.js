@@ -194,6 +194,44 @@ authRouter.put('/profile', authMiddleware, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// 테스트 계정 생성 (role 지정 가능)
+authRouter.post('/test-account', async (req, res, next) => {
+  try {
+    const { email, password, name, phone, role } = req.body;
+
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: '이메일, 비밀번호, 이름은 필수입니다.' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: '비밀번호는 6자 이상이어야 합니다.' });
+    }
+    const userRole = role === 'admin' ? 'admin' : 'user';
+
+    const { rows: existing } = await db.query(
+      'SELECT id FROM griff_users WHERE email = $1', [email]
+    );
+    if (existing.length > 0) {
+      return res.status(409).json({ error: '이미 등록된 이메일입니다.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    const { rows } = await db.query(
+      `INSERT INTO griff_users (email, password_hash, name, phone, role)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, email, name, phone, role, created_at`,
+      [email, passwordHash, name, phone || null, userRole]
+    );
+
+    const user = rows[0];
+    const token = generateToken(user);
+
+    res.status(201).json({
+      message: '테스트 계정 생성 성공',
+      user: { id: user.id, email: user.email, name: user.name, phone: user.phone, role: user.role },
+      token,
+    });
+  } catch (err) { next(err); }
+});
+
 app.use('/api/auth', authRouter);
 
 // --- /api/categories ---

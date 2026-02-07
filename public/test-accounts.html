@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GRIFF Shop - 테스트 계정 생성</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Noto Sans KR', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useCallback } = React;
+
+    // ========================================
+    // API
+    // ========================================
+
+    const API_BASE_URL = '/api';
+
+    async function createTestAccount(data) {
+      const res = await fetch(`${API_BASE_URL}/auth/test-account`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      return res.json().then(json => ({ ok: res.ok, status: res.status, data: json }));
+    }
+
+    async function loginAccount(email, password) {
+      const res = await fetch(`${API_BASE_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      return res.json().then(json => ({ ok: res.ok, data: json }));
+    }
+
+    // ========================================
+    // Components
+    // ========================================
+
+    function Toast({ message, type, onClose }) {
+      if (!message) return null;
+      const colors = {
+        success: 'bg-green-50 border-green-400 text-green-800',
+        error: 'bg-red-50 border-red-400 text-red-800',
+        info: 'bg-blue-50 border-blue-400 text-blue-800',
+      };
+      return (
+        <div className={`fixed top-6 right-6 z-50 border-l-4 p-4 rounded-lg shadow-lg max-w-md ${colors[type] || colors.info}`}>
+          <div className="flex items-start gap-3">
+            <div className="flex-1">
+              <p className="text-sm font-medium whitespace-pre-wrap">{message}</p>
+            </div>
+            <button onClick={onClose} className="text-current opacity-60 hover:opacity-100 text-lg leading-none">&times;</button>
+          </div>
+        </div>
+      );
+    }
+
+    function RoleBadge({ role }) {
+      const styles = role === 'admin'
+        ? 'bg-red-100 text-red-700 border-red-200'
+        : 'bg-blue-100 text-blue-700 border-blue-200';
+      const label = role === 'admin' ? '관리자' : '일반유저';
+      return (
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${styles}`}>
+          {label}
+        </span>
+      );
+    }
+
+    function AccountCard({ account, onLogin }) {
+      return (
+        <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md transition-shadow">
+          <div className="flex items-center justify-between mb-3">
+            <span className="font-semibold text-gray-900">{account.user.name}</span>
+            <RoleBadge role={account.user.role} />
+          </div>
+          <div className="space-y-1.5 text-sm text-gray-600">
+            <div className="flex items-center gap-2">
+              <span className="text-gray-400 w-12">이메일</span>
+              <span className="font-mono text-gray-800">{account.user.email}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-gray-400 w-12">ID</span>
+              <span className="font-mono text-gray-800">{account.user.id}</span>
+            </div>
+            {account.user.phone && (
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 w-12">전화</span>
+                <span className="font-mono text-gray-800">{account.user.phone}</span>
+              </div>
+            )}
+          </div>
+          <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between">
+            <span className="text-xs text-gray-400">JWT 토큰 발급됨</span>
+            <button
+              onClick={() => onLogin(account)}
+              className="text-xs text-blue-600 hover:text-blue-800 font-medium hover:underline"
+            >
+              토큰 복사
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    function CreateAccountForm({ role, onCreated }) {
+      const isAdmin = role === 'admin';
+      const [form, setForm] = useState({
+        email: '',
+        password: '',
+        name: '',
+        phone: '',
+      });
+      const [loading, setLoading] = useState(false);
+
+      const fillSample = useCallback(() => {
+        const timestamp = Date.now().toString().slice(-6);
+        setForm({
+          email: isAdmin ? `admin${timestamp}@test.com` : `user${timestamp}@test.com`,
+          password: 'test1234',
+          name: isAdmin ? `관리자_${timestamp}` : `테스트유저_${timestamp}`,
+          phone: '010-1234-5678',
+        });
+      }, [isAdmin]);
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+          const result = await createTestAccount({ ...form, role });
+          if (result.ok) {
+            onCreated({ ...result.data, password: form.password });
+            setForm({ email: '', password: '', name: '', phone: '' });
+          } else {
+            onCreated({ error: result.data.error || '계정 생성 실패' });
+          }
+        } catch (err) {
+          onCreated({ error: '서버 연결 실패: ' + err.message });
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const inputClass = "w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-offset-1 " +
+        (isAdmin ? "focus:ring-red-400 focus:border-red-400" : "focus:ring-blue-400 focus:border-blue-400");
+
+      return (
+        <div className={`bg-white rounded-2xl border-2 ${isAdmin ? 'border-red-200' : 'border-blue-200'} overflow-hidden`}>
+          <div className={`px-6 py-4 ${isAdmin ? 'bg-red-50' : 'bg-blue-50'} border-b ${isAdmin ? 'border-red-100' : 'border-blue-100'}`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className={`text-lg font-bold ${isAdmin ? 'text-red-800' : 'text-blue-800'}`}>
+                  {isAdmin ? '관리자 계정 생성' : '일반유저 계정 생성'}
+                </h3>
+                <p className={`text-sm mt-0.5 ${isAdmin ? 'text-red-600' : 'text-blue-600'}`}>
+                  {isAdmin ? 'role: admin - 관리자 페이지 접근 가능' : 'role: user - 일반 쇼핑 기능 사용'}
+                </p>
+              </div>
+              <RoleBadge role={role} />
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmit} className="p-6 space-y-4">
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={fillSample}
+                className="text-xs text-gray-500 hover:text-gray-700 border border-gray-300 rounded-md px-3 py-1.5 hover:bg-gray-50 transition-colors"
+              >
+                샘플 데이터 자동입력
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">이메일 <span className="text-red-500">*</span></label>
+              <input
+                type="email"
+                required
+                value={form.email}
+                onChange={(e) => setForm(prev => ({ ...prev, email: e.target.value }))}
+                placeholder={isAdmin ? 'admin@test.com' : 'user@test.com'}
+                className={inputClass}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">비밀번호 <span className="text-red-500">*</span> <span className="text-xs text-gray-400">(6자 이상)</span></label>
+              <input
+                type="text"
+                required
+                minLength={6}
+                value={form.password}
+                onChange={(e) => setForm(prev => ({ ...prev, password: e.target.value }))}
+                placeholder="test1234"
+                className={inputClass}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">이름 <span className="text-red-500">*</span></label>
+              <input
+                type="text"
+                required
+                value={form.name}
+                onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
+                placeholder={isAdmin ? '관리자' : '테스트유저'}
+                className={inputClass}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">전화번호 <span className="text-xs text-gray-400">(선택)</span></label>
+              <input
+                type="text"
+                value={form.phone}
+                onChange={(e) => setForm(prev => ({ ...prev, phone: e.target.value }))}
+                placeholder="010-1234-5678"
+                className={inputClass}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className={`w-full py-3 rounded-lg font-semibold text-white transition-colors text-sm ${
+                isAdmin
+                  ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-300'
+                  : 'bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300'
+              } disabled:cursor-not-allowed`}
+            >
+              {loading ? '생성 중...' : `${isAdmin ? '관리자' : '일반유저'} 계정 생성`}
+            </button>
+          </form>
+        </div>
+      );
+    }
+
+    function QuickCreate({ onCreated }) {
+      const [loading, setLoading] = useState({ user: false, admin: false });
+
+      const quickCreate = async (role) => {
+        setLoading(prev => ({ ...prev, [role]: true }));
+        const timestamp = Date.now().toString().slice(-6);
+        const data = {
+          email: `${role}${timestamp}@test.com`,
+          password: 'test1234',
+          name: role === 'admin' ? `관리자_${timestamp}` : `유저_${timestamp}`,
+          phone: '010-0000-0000',
+          role,
+        };
+        try {
+          const result = await createTestAccount(data);
+          if (result.ok) {
+            onCreated({ ...result.data, password: data.password });
+          } else {
+            onCreated({ error: result.data.error || '생성 실패' });
+          }
+        } catch (err) {
+          onCreated({ error: '서버 연결 실패: ' + err.message });
+        } finally {
+          setLoading(prev => ({ ...prev, [role]: false }));
+        }
+      };
+
+      return (
+        <div className="bg-gradient-to-r from-gray-50 to-gray-100 rounded-2xl border border-gray-200 p-6">
+          <h3 className="text-lg font-bold text-gray-800 mb-2">빠른 생성</h3>
+          <p className="text-sm text-gray-500 mb-4">한 번의 클릭으로 랜덤 테스트 계정을 생성합니다. (비밀번호: test1234)</p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => quickCreate('user')}
+              disabled={loading.user}
+              className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed"
+            >
+              {loading.user ? '생성 중...' : '일반유저 즉시 생성'}
+            </button>
+            <button
+              onClick={() => quickCreate('admin')}
+              disabled={loading.admin}
+              className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:bg-red-300 disabled:cursor-not-allowed"
+            >
+              {loading.admin ? '생성 중...' : '관리자 즉시 생성'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    function LoginTest() {
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [result, setResult] = useState(null);
+      const [loading, setLoading] = useState(false);
+
+      const handleLogin = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setResult(null);
+        try {
+          const res = await loginAccount(email, password);
+          setResult(res);
+        } catch (err) {
+          setResult({ ok: false, data: { error: '서버 연결 실패: ' + err.message } });
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      return (
+        <div className="bg-white rounded-2xl border-2 border-gray-200 overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+            <h3 className="text-lg font-bold text-gray-800">로그인 테스트</h3>
+            <p className="text-sm text-gray-500 mt-0.5">생성한 계정으로 로그인 API를 테스트합니다.</p>
+          </div>
+          <form onSubmit={handleLogin} className="p-6 space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">이메일</label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="test@test.com"
+                className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">비밀번호</label>
+              <input
+                type="text"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="test1234"
+                className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-3 bg-gray-800 hover:bg-gray-900 text-white rounded-lg font-semibold text-sm transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+            >
+              {loading ? '로그인 중...' : '로그인 테스트'}
+            </button>
+
+            {result && (
+              <div className={`mt-3 p-4 rounded-lg text-sm ${result.ok ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                {result.ok ? (
+                  <div>
+                    <p className="font-semibold text-green-800 mb-2">로그인 성공!</p>
+                    <div className="space-y-1 text-green-700">
+                      <p>이름: {result.data.user.name}</p>
+                      <p>역할: <RoleBadge role={result.data.user.role} /></p>
+                      <div className="mt-2">
+                        <p className="text-xs text-green-600 mb-1">JWT 토큰:</p>
+                        <code className="block text-xs bg-green-100 p-2 rounded break-all">{result.data.token}</code>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-red-700">{result.data.error}</p>
+                )}
+              </div>
+            )}
+          </form>
+        </div>
+      );
+    }
+
+    // ========================================
+    // App
+    // ========================================
+
+    function App() {
+      const [toast, setToast] = useState({ message: '', type: 'info' });
+      const [createdAccounts, setCreatedAccounts] = useState([]);
+
+      const showToast = (message, type = 'info') => {
+        setToast({ message, type });
+        setTimeout(() => setToast({ message: '', type: 'info' }), 4000);
+      };
+
+      const handleCreated = (result) => {
+        if (result.error) {
+          showToast(result.error, 'error');
+          return;
+        }
+        setCreatedAccounts(prev => [result, ...prev]);
+        showToast(
+          `${result.user.role === 'admin' ? '관리자' : '일반유저'} 계정 생성 완료!\n이메일: ${result.user.email}\n비밀번호: ${result.password}`,
+          'success'
+        );
+      };
+
+      const handleCopyToken = (account) => {
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(account.token);
+          showToast('JWT 토큰이 클립보드에 복사되었습니다.', 'info');
+        }
+      };
+
+      return (
+        <div className="min-h-screen bg-gray-50 font-sans">
+          <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'info' })} />
+
+          {/* Header */}
+          <header className="bg-white border-b border-gray-200">
+            <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">GRIFF Shop</h1>
+                <p className="text-sm text-gray-500">테스트 계정 관리</p>
+              </div>
+              <a
+                href="/"
+                className="text-sm text-blue-600 hover:text-blue-800 hover:underline"
+              >
+                쇼핑몰로 이동 &rarr;
+              </a>
+            </div>
+          </header>
+
+          {/* Main */}
+          <main className="max-w-6xl mx-auto px-4 py-8">
+            {/* Quick Create */}
+            <section className="mb-8">
+              <QuickCreate onCreated={handleCreated} />
+            </section>
+
+            {/* Forms Row */}
+            <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+              <CreateAccountForm role="user" onCreated={handleCreated} />
+              <CreateAccountForm role="admin" onCreated={handleCreated} />
+            </section>
+
+            {/* Login Test */}
+            <section className="mb-8">
+              <LoginTest />
+            </section>
+
+            {/* Created Accounts */}
+            {createdAccounts.length > 0 && (
+              <section>
+                <h2 className="text-xl font-bold text-gray-800 mb-4">
+                  생성된 계정 ({createdAccounts.length}개)
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {createdAccounts.map((account, i) => (
+                    <AccountCard key={i} account={account} onLogin={handleCopyToken} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* API Info */}
+            <section className="mt-12 bg-white rounded-2xl border border-gray-200 p-6">
+              <h2 className="text-lg font-bold text-gray-800 mb-4">API 정보</h2>
+              <div className="space-y-3 text-sm">
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <p className="font-semibold text-gray-700 mb-1">테스트 계정 생성</p>
+                  <code className="text-xs text-gray-600">POST /api/auth/test-account</code>
+                  <pre className="mt-2 text-xs text-gray-500 bg-gray-100 p-3 rounded overflow-x-auto">
+{`{
+  "email": "test@test.com",
+  "password": "test1234",
+  "name": "테스트유저",
+  "phone": "010-1234-5678",
+  "role": "user"  // "user" 또는 "admin"
+}`}
+                  </pre>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <p className="font-semibold text-gray-700 mb-1">로그인</p>
+                  <code className="text-xs text-gray-600">POST /api/auth/login</code>
+                  <pre className="mt-2 text-xs text-gray-500 bg-gray-100 p-3 rounded overflow-x-auto">
+{`{
+  "email": "test@test.com",
+  "password": "test1234"
+}`}
+                  </pre>
+                </div>
+              </div>
+            </section>
+          </main>
+
+          {/* Footer */}
+          <footer className="border-t border-gray-200 mt-12 py-6">
+            <p className="text-center text-sm text-gray-400">GRIFF Shop Test Account Manager</p>
+          </footer>
+        </div>
+      );
+    }
+
+    // Render
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
