@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.png
+.playwright-mcp/
+.vercel/
+.DS_Store
