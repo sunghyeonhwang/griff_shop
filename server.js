@@ -7,6 +7,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const crypto = require('crypto');
 
 // ─── DB 연결 ───────────────────────────────────────
 const pool = new Pool({
@@ -60,7 +61,9 @@ function adminMiddleware(req, res, next) {
 }
 
 // ─── 파일 업로드 설정 (multer) ──────────────────────
-const uploadsDir = path.join(__dirname, 'public', 'uploads');
+const uploadsDir = process.env.VERCEL
+  ? '/tmp/uploads'
+  : path.join(__dirname, 'public', 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
 const storage = multer.diskStorage({
@@ -774,18 +777,21 @@ const paymentsRouter = express.Router();
 paymentsRouter.post('/confirm', authMiddleware, async (req, res, next) => {
   const client = await pool.connect();
   try {
-    const { paymentKey, orderId, amount } = req.body;
+    const { paymentKey, orderId: tossOrderId, amount } = req.body;
 
-    if (!paymentKey || !orderId || amount == null) {
+    if (!paymentKey || !tossOrderId || amount == null) {
       return res.status(400).json({ error: 'paymentKey, orderId, amount는 필수입니다.' });
     }
+
+    // GRIFF-{dbId}-{timestamp} 형식에서 DB 주문 ID 추출
+    const dbOrderId = tossOrderId.startsWith('GRIFF-') ? tossOrderId.split('-')[1] : tossOrderId;
 
     await client.query('BEGIN');
 
     // 1) DB에서 주문 조회 + 금액 검증 + 소유자 확인
     const { rows: orders } = await client.query(
       'SELECT id, user_id, total_amount, status FROM griff_orders WHERE id = $1 FOR UPDATE',
-      [orderId]
+      [dbOrderId]
     );
 
     if (orders.length === 0) {
@@ -823,7 +829,7 @@ paymentsRouter.post('/confirm', authMiddleware, async (req, res, next) => {
         'Authorization': `Basic ${encodedKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ paymentKey, orderId: String(orderId), amount: Number(amount) }),
+      body: JSON.stringify({ paymentKey, orderId: String(tossOrderId), amount: Number(amount) }),
     });
 
     const tossData = await tossResponse.json();
@@ -841,13 +847,13 @@ paymentsRouter.post('/confirm', authMiddleware, async (req, res, next) => {
     const { rows: payments } = await client.query(
       `INSERT INTO griff_payments (order_id, payment_key, method, amount, status, approved_at)
        VALUES ($1, $2, $3, $4, 'done', $5) RETURNING *`,
-      [orderId, paymentKey, tossData.method, Number(amount), tossData.approvedAt]
+      [dbOrderId, paymentKey, tossData.method, Number(amount), tossData.approvedAt]
     );
 
     // 4) 주문 상태 업데이트
     await client.query(
       "UPDATE griff_orders SET status = 'paid' WHERE id = $1",
-      [orderId]
+      [dbOrderId]
     );
 
     await client.query('COMMIT');
@@ -866,7 +872,24 @@ paymentsRouter.post('/confirm', authMiddleware, async (req, res, next) => {
 
 // POST /api/payments/webhook – 토스페이먼츠 웹훅 수신
 paymentsRouter.post('/webhook', async (req, res, next) => {
+  const client = await pool.connect();
   try {
+    // 웹훅 서명 검증 (토스페이먼츠 웹훅 시크릿)
+    const TOSS_WEBHOOK_SECRET = process.env.TOSS_WEBHOOK_SECRET;
+    if (TOSS_WEBHOOK_SECRET) {
+      const signature = req.headers['toss-signature'];
+      if (!signature) {
+        return res.status(401).json({ error: '웹훅 서명이 없습니다.' });
+      }
+      const expectedSignature = crypto
+        .createHmac('sha256', TOSS_WEBHOOK_SECRET)
+        .update(JSON.stringify(req.body))
+        .digest('base64');
+      if (signature !== expectedSignature) {
+        return res.status(401).json({ error: '웹훅 서명이 유효하지 않습니다.' });
+      }
+    }
+
     const { eventType, data } = req.body;
 
     if (eventType === 'PAYMENT_STATUS_CHANGED') {
@@ -886,8 +909,10 @@ paymentsRouter.post('/webhook', async (req, res, next) => {
         return res.json({ success: true }); // 알 수 없는 상태는 무시
       }
 
+      await client.query('BEGIN');
+
       // 결제 상태 업데이트
-      await db.query(
+      await client.query(
         'UPDATE griff_payments SET status = $1 WHERE payment_key = $2',
         [dbStatus, paymentKey]
       );
@@ -900,15 +925,43 @@ paymentsRouter.post('/webhook', async (req, res, next) => {
       };
 
       if (orderId && orderStatusMap[dbStatus]) {
-        await db.query(
+        // 취소/실패 시 재고 복원
+        if (dbStatus === 'cancelled' || dbStatus === 'failed') {
+          const { rows: currentOrder } = await client.query(
+            'SELECT status FROM griff_orders WHERE id = $1',
+            [orderId]
+          );
+          // 이미 cancelled가 아닌 경우에만 재고 복원 (중복 복원 방지)
+          if (currentOrder.length > 0 && currentOrder[0].status !== 'cancelled') {
+            const { rows: items } = await client.query(
+              'SELECT product_id, quantity FROM griff_order_items WHERE order_id = $1',
+              [orderId]
+            );
+            for (const item of items) {
+              await client.query(
+                'UPDATE griff_products SET stock = stock + $1 WHERE id = $2',
+                [item.quantity, item.product_id]
+              );
+            }
+          }
+        }
+
+        await client.query(
           'UPDATE griff_orders SET status = $1 WHERE id = $2',
           [orderStatusMap[dbStatus], orderId]
         );
       }
+
+      await client.query('COMMIT');
     }
 
     res.json({ success: true });
-  } catch (err) { next(err); }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
 });
 
 // GET /api/payments/:orderId – 결제 정보 조회
@@ -930,8 +983,10 @@ paymentsRouter.get('/:orderId', authMiddleware, async (req, res, next) => {
 app.use('/api/payments', paymentsRouter);
 
 // ─── 히어로 설정 (JSON 파일 기반) ─────────────────────
-const heroSettingsPath = path.join(__dirname, 'data', 'hero-settings.json');
-const dataDir = path.join(__dirname, 'data');
+const dataDir = process.env.VERCEL
+  ? '/tmp/data'
+  : path.join(__dirname, 'data');
+const heroSettingsPath = path.join(dataDir, 'hero-settings.json');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 function getHeroSettings() {
@@ -1006,6 +1061,16 @@ adminRouter.post('/products', async (req, res, next) => {
       return res.status(400).json({ error: '상품명과 가격은 필수입니다.' });
     }
 
+    const parsedPrice = parseInt(price, 10);
+    const parsedStock = parseInt(stock, 10) || 0;
+    if (parsedPrice < 0) return res.status(400).json({ error: '가격은 0 이상이어야 합니다.' });
+    if (parsedStock < 0) return res.status(400).json({ error: '재고는 0 이상이어야 합니다.' });
+    if (sale_price != null) {
+      const sp = parseInt(sale_price, 10);
+      if (sp <= 0) return res.status(400).json({ error: '할인가는 0보다 커야 합니다.' });
+      if (sp >= parsedPrice) return res.status(400).json({ error: '할인가는 정상가보다 작아야 합니다.' });
+    }
+
     const { rows } = await db.query(
       `INSERT INTO griff_products (category_id, name, description, price, sale_price, stock, thumbnail, images, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -1014,9 +1079,9 @@ adminRouter.post('/products', async (req, res, next) => {
         category_id || null,
         name,
         description || null,
-        parseInt(price, 10),
+        parsedPrice,
         sale_price != null ? parseInt(sale_price, 10) : null,
-        parseInt(stock, 10) || 0,
+        parsedStock,
         thumbnail || null,
         JSON.stringify(images || []),
         is_active !== false,
@@ -1032,13 +1097,34 @@ adminRouter.put('/products/:id', async (req, res, next) => {
   try {
     const { category_id, name, description, price, sale_price, stock, thumbnail, images, is_active } = req.body;
 
+    // 입력 검증 (제공된 필드에 대해서만)
+    if (price != null) {
+      const pp = parseInt(price, 10);
+      if (pp < 0) return res.status(400).json({ error: '가격은 0 이상이어야 합니다.' });
+    }
+    if (stock != null) {
+      const ps = parseInt(stock, 10);
+      if (ps < 0) return res.status(400).json({ error: '재고는 0 이상이어야 합니다.' });
+    }
+    if (sale_price != null) {
+      const sp = parseInt(sale_price, 10);
+      if (sp <= 0) return res.status(400).json({ error: '할인가는 0보다 커야 합니다.' });
+      const comparePrice = price != null ? parseInt(price, 10) : null;
+      if (comparePrice != null && sp >= comparePrice) {
+        return res.status(400).json({ error: '할인가는 정상가보다 작아야 합니다.' });
+      }
+    }
+
+    // sale_price: 명시적 전달 시 직접 할당, 미전달 시 기존값 유지
+    const salePriceExpr = 'sale_price' in req.body ? '$5' : 'COALESCE($5, sale_price)';
+
     const { rows } = await db.query(
       `UPDATE griff_products
        SET category_id = COALESCE($1, category_id),
            name        = COALESCE($2, name),
            description = COALESCE($3, description),
            price       = COALESCE($4, price),
-           sale_price  = $5,
+           sale_price  = ${salePriceExpr},
            stock       = COALESCE($6, stock),
            thumbnail   = COALESCE($7, thumbnail),
            images      = COALESCE($8, images),
@@ -1050,7 +1136,7 @@ adminRouter.put('/products/:id', async (req, res, next) => {
         name || null,
         description !== undefined ? description : null,
         price != null ? parseInt(price, 10) : null,
-        sale_price != null ? parseInt(sale_price, 10) : null,
+        'sale_price' in req.body ? (sale_price != null ? parseInt(sale_price, 10) : null) : null,
         stock != null ? parseInt(stock, 10) : null,
         thumbnail !== undefined ? thumbnail : null,
         images !== undefined ? JSON.stringify(images) : null,
@@ -1099,7 +1185,12 @@ adminRouter.post('/categories', async (req, res, next) => {
     );
 
     res.status(201).json(rows[0]);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: '이미 사용 중인 slug입니다.' });
+    }
+    next(err);
+  }
 });
 
 // PUT /api/admin/categories/:id – 카테고리 수정
@@ -1107,18 +1198,21 @@ adminRouter.put('/categories/:id', async (req, res, next) => {
   try {
     const { name, slug, parent_id, sort_order } = req.body;
 
+    // parent_id: 명시적 전달 시 직접 할당, 미전달 시 기존값 유지
+    const parentIdExpr = 'parent_id' in req.body ? '$3' : 'COALESCE($3, parent_id)';
+
     const { rows } = await db.query(
       `UPDATE griff_categories
        SET name       = COALESCE($1, name),
            slug       = COALESCE($2, slug),
-           parent_id  = $3,
+           parent_id  = ${parentIdExpr},
            sort_order = COALESCE($4, sort_order)
        WHERE id = $5
        RETURNING *`,
       [
         name || null,
         slug || null,
-        parent_id !== undefined ? (parent_id || null) : null,
+        'parent_id' in req.body ? (parent_id || null) : null,
         sort_order != null ? parseInt(sort_order, 10) : null,
         req.params.id,
       ]
@@ -1128,7 +1222,12 @@ adminRouter.put('/categories/:id', async (req, res, next) => {
       return res.status(404).json({ error: '카테고리를 찾을 수 없습니다.' });
     }
     res.json(rows[0]);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: '이미 사용 중인 slug입니다.' });
+    }
+    next(err);
+  }
 });
 
 // DELETE /api/admin/categories/:id – 카테고리 삭제
@@ -1248,20 +1347,25 @@ adminRouter.get('/orders/:id', async (req, res, next) => {
 
 // PUT /api/admin/orders/:id/status – 주문 상태 변경
 adminRouter.put('/orders/:id/status', async (req, res, next) => {
+  const client = await pool.connect();
   try {
     const { status } = req.body;
     const validStatuses = ['pending', 'paid', 'shipping', 'delivered', 'cancelled'];
 
     if (!status || !validStatuses.includes(status)) {
+      client.release();
       return res.status(400).json({ error: `유효하지 않은 상태입니다. (${validStatuses.join(', ')})` });
     }
 
-    // 현재 주문 조회
-    const { rows: orders } = await db.query(
-      'SELECT id, status FROM griff_orders WHERE id = $1',
+    await client.query('BEGIN');
+
+    // 현재 주문 조회 (행 잠금)
+    const { rows: orders } = await client.query(
+      'SELECT id, status FROM griff_orders WHERE id = $1 FOR UPDATE',
       [req.params.id]
     );
     if (orders.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
     }
 
@@ -1277,6 +1381,7 @@ adminRouter.put('/orders/:id/status', async (req, res, next) => {
     };
 
     if (!transitions[currentStatus].includes(status)) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         error: `${currentStatus} → ${status} 상태 전환은 허용되지 않습니다.`,
         allowed: transitions[currentStatus],
@@ -1285,25 +1390,32 @@ adminRouter.put('/orders/:id/status', async (req, res, next) => {
 
     // 취소 시 재고 복원
     if (status === 'cancelled') {
-      const { rows: items } = await db.query(
+      const { rows: items } = await client.query(
         'SELECT product_id, quantity FROM griff_order_items WHERE order_id = $1',
         [req.params.id]
       );
       for (const item of items) {
-        await db.query(
+        await client.query(
           'UPDATE griff_products SET stock = stock + $1 WHERE id = $2',
           [item.quantity, item.product_id]
         );
       }
     }
 
-    const { rows } = await db.query(
+    const { rows } = await client.query(
       'UPDATE griff_orders SET status = $1 WHERE id = $2 RETURNING *',
       [status, req.params.id]
     );
 
+    await client.query('COMMIT');
+
     res.json({ message: '주문 상태가 변경되었습니다.', order: rows[0] });
-  } catch (err) { next(err); }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
 });
 
 // ── 히어로 설정 관리 ───────────────────────────────
@@ -1348,24 +1460,27 @@ adminRouter.post('/hero-upload', upload.single('file'), (req, res) => {
 
 app.use('/api/admin', adminRouter);
 
-// ─── React SPA 폴백 ───────────────────────────────
-app.get('{*path}', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+// ─── React SPA 폴백 (로컬 전용, Vercel은 vercel.json routes로 처리) ─
+if (!process.env.VERCEL) {
+  app.get('{*path}', (_req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  });
+}
 
 // ─── 에러 핸들링 미들웨어 ──────────────────────────
 app.use((err, _req, res, _next) => {
   console.error('[ERROR]', err.message);
   res.status(err.status || 500).json({
-    message: err.message || '서버 내부 오류',
+    error: err.message || '서버 내부 오류',
   });
 });
 
 // ─── 서버 시작 ─────────────────────────────────────
-const PORT = process.env.PORT || 4000;
-
-app.listen(PORT, () => {
-  console.log(`✓ Server running on port ${PORT}`);
-});
+if (!process.env.VERCEL) {
+  const PORT = process.env.PORT || 4000;
+  app.listen(PORT, () => {
+    console.log(`✓ Server running on port ${PORT}`);
+  });
+}
 
 module.exports = app;

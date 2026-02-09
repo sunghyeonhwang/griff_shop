@@ -2315,6 +2315,24 @@
       const paymentWidgetRef = useRef(null);
       const [widgetReady, setWidgetReady] = useState(false);
 
+      // 페이지 진입 시 미결제 pending 주문 복구 (새로고침 대비)
+      useEffect(() => {
+        if (!isLoggedIn) return;
+        const pendingOrderId = sessionStorage.getItem('griff_pending_order_id');
+        if (pendingOrderId) {
+          sessionStorage.removeItem('griff_pending_order_id');
+          (async () => {
+            try {
+              await api.post(`/orders/${pendingOrderId}/cancel`);
+              await fetchCart();
+              addToast('미완료 주문이 복구되었습니다.', 'info');
+            } catch (e) {
+              // 이미 취소되었거나 결제 완료된 주문이면 무시
+            }
+          })();
+        }
+      }, [isLoggedIn]);
+
       // 프로필 정보 로드
       useEffect(() => {
         if (!isLoggedIn) { setLoading(false); return; }
@@ -2425,6 +2443,11 @@
           return;
         }
 
+        if (!paymentWidgetRef.current || !widgetReady) {
+          addToast('결제 위젯을 불러오는 중입니다. 잠시 후 다시 시도해 주세요.', 'error');
+          return;
+        }
+
         setProcessing(true);
         let orderId = null;
         try {
@@ -2432,9 +2455,13 @@
           const orderData = await api.post('/orders', { shipping_address: form.address });
           orderId = orderData.order.id;
 
-          // 2) 토스페이먼츠 결제창 호출
+          // 새로고침 대비: pending 주문 ID 저장
+          sessionStorage.setItem('griff_pending_order_id', String(orderId));
+
+          // 2) 토스페이먼츠 결제창 호출 (orderId: 영문+숫자+특수문자, 6~64자)
+          const tossOrderId = `GRIFF-${orderId}-${Date.now()}`;
           await paymentWidgetRef.current.requestPayment({
-            orderId: String(orderId),
+            orderId: tossOrderId,
             orderName: items.length === 1 ? items[0].name : `${items[0].name} 외 ${items.length - 1}건`,
             customerName: form.name,
             customerEmail: profile?.email || '',
@@ -2448,6 +2475,7 @@
             try {
               await api.post(`/orders/${orderId}/cancel`);
               await fetchCart();
+              sessionStorage.removeItem('griff_pending_order_id');
             } catch (cancelErr) {
               console.warn('주문 취소 실패:', cancelErr.message);
             }
@@ -2573,7 +2601,7 @@
 
                   <button
                     onClick={handlePayment}
-                    disabled={processing}
+                    disabled={processing || !widgetReady}
                     className="w-full py-4 bg-brand-900 text-white text-sm font-medium tracking-wider hover:bg-brand-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
                     {processing ? (
@@ -2581,6 +2609,8 @@
                         <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                         결제 진행 중...
                       </>
+                    ) : !widgetReady ? (
+                      '결제 위젯 로딩 중...'
                     ) : (
                       `${formatPrice(totalPrice)} 결제하기`
                     )}
@@ -2908,24 +2938,37 @@
         const combinedQuery = [searchQuery, hashQuery].filter(Boolean).join('&');
         const params = new URLSearchParams(combinedQuery);
         const paymentKey = params.get('paymentKey');
-        const orderId = params.get('orderId');
+        const tossOrderId = params.get('orderId');
         const amount = params.get('amount');
 
-        if (!paymentKey || !orderId || !amount) {
+        if (!paymentKey || !tossOrderId || !amount) {
           setError('결제 정보가 올바르지 않습니다.');
           setConfirming(false);
           return;
         }
 
-        // 결제 승인 요청
-        api.post('/payments/confirm', { paymentKey, orderId, amount: Number(amount) })
+        // GRIFF-{dbId}-{timestamp} 에서 DB 주문 ID 추출
+        const dbOrderId = tossOrderId.startsWith('GRIFF-') ? tossOrderId.split('-')[1] : tossOrderId;
+
+        // 결제 승인 요청 (tossOrderId를 그대로 전달 — 백엔드에서 DB ID 추출)
+        sessionStorage.removeItem('griff_pending_order_id');
+        api.post('/payments/confirm', { paymentKey, orderId: tossOrderId, amount: Number(amount) })
           .then(data => {
             setResult(data);
             fetchCart();
             addToast('결제가 완료되었습니다!', 'success');
           })
-          .catch(err => {
+          .catch(async (err) => {
             setError(err.message || '결제 승인에 실패했습니다.');
+            // 결제 승인 실패 시 pending 주문 취소 + 재고 복원 + 장바구니 복원
+            if (dbOrderId) {
+              try {
+                await api.post(`/orders/${dbOrderId}/cancel`);
+                await fetchCart();
+              } catch (cancelErr) {
+                console.warn('승인 실패 후 주문 취소 실패:', cancelErr.message);
+              }
+            }
           })
           .finally(() => setConfirming(false));
       }, []);
@@ -2986,26 +3029,34 @@
       const [recovering, setRecovering] = useState(true);
       const recoveredRef = useRef(false);
 
-      // URL에서 code, message, orderId 추출
-      // 토스페이먼츠 리다이렉트 시 쿼리 파라미터 위치가 해시 앞/뒤 모두 가능
-      const hash = window.location.hash;
-      const hashQuery = hash.includes('?') ? hash.split('?')[1] : '';
-      const searchQuery = window.location.search.replace(/^\?/, '');
-      const combinedQuery = [searchQuery, hashQuery].filter(Boolean).join('&');
-      const params = new URLSearchParams(combinedQuery);
-      const code = params.get('code') || 'UNKNOWN';
-      const message = params.get('message') || '결제 처리 중 문제가 발생했습니다.';
-      const orderId = params.get('orderId');
+      // URL에서 code, message, orderId 추출 (useMemo로 안정적 파싱)
+      const { code, message, orderId } = useMemo(() => {
+        const hash = window.location.hash;
+        const hashQuery = hash.includes('?') ? hash.split('?')[1] : '';
+        const searchQuery = window.location.search.replace(/^\?/, '');
+        const combinedQuery = [searchQuery, hashQuery].filter(Boolean).join('&');
+        const params = new URLSearchParams(combinedQuery);
+        return {
+          code: params.get('code') || 'UNKNOWN',
+          message: params.get('message') || '결제 처리 중 문제가 발생했습니다.',
+          orderId: params.get('orderId'),
+        };
+      }, []);
+
+      // GRIFF-{dbId}-{timestamp} 에서 DB 주문 ID 추출
+      const dbOrderId = orderId && orderId.startsWith('GRIFF-') ? orderId.split('-')[1] : orderId;
 
       // 결제 실패 시 pending 주문을 자동 취소하고 장바구니 복원
       useEffect(() => {
         if (recoveredRef.current) return;
         recoveredRef.current = true;
 
+        sessionStorage.removeItem('griff_pending_order_id');
+
         (async () => {
           try {
-            if (orderId) {
-              await api.post(`/orders/${orderId}/cancel`);
+            if (dbOrderId) {
+              await api.post(`/orders/${dbOrderId}/cancel`);
             }
             await fetchCart();
           } catch (e) {
@@ -3120,7 +3171,7 @@
                 ← 쇼핑몰로 돌아가기
               </Link>
             </div>
-            <div className="flex gap-6">
+            <div className="flex flex-col md:flex-row gap-6">
               <aside className="hidden md:block w-48 shrink-0">
                 <nav className="flex flex-col gap-1">
                   {menuItems.map(item => {
@@ -3502,7 +3553,7 @@
         api.get(`/admin/orders?${params}`)
           .then(data => {
             setOrders(data.orders || []);
-            setTotal(data.total || 0);
+            setTotal(data.pagination?.total_count || 0);
           })
           .catch(() => addToast('주문 목록을 불러오지 못했습니다.', 'error'))
           .finally(() => setLoading(false));
@@ -3532,6 +3583,13 @@
         cancelled: 'bg-red-100 text-red-800',
       };
       const allStatuses = ['pending', 'paid', 'shipping', 'delivered', 'cancelled'];
+      const statusTransitions = {
+        pending: ['paid', 'cancelled'],
+        paid: ['shipping', 'cancelled'],
+        shipping: ['delivered', 'cancelled'],
+        delivered: [],
+        cancelled: [],
+      };
 
       const totalPages = Math.ceil(total / limit);
 
@@ -3596,15 +3654,20 @@
                             {new Date(o.created_at).toLocaleDateString('ko-KR')}
                           </td>
                           <td className="px-4 py-3 text-center">
-                            <select
-                              value={o.status}
-                              onChange={(e) => handleStatusChange(o.id, e.target.value)}
-                              className="text-xs border border-brand-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400"
-                            >
-                              {allStatuses.map(s => (
-                                <option key={s} value={s}>{statusLabels[s]}</option>
-                              ))}
-                            </select>
+                            {(statusTransitions[o.status] || []).length > 0 ? (
+                              <select
+                                value={o.status}
+                                onChange={(e) => handleStatusChange(o.id, e.target.value)}
+                                className="text-xs border border-brand-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                              >
+                                <option value={o.status}>{statusLabels[o.status]}</option>
+                                {statusTransitions[o.status].map(s => (
+                                  <option key={s} value={s}>{statusLabels[s]}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <span className="text-xs text-brand-400">-</span>
+                            )}
                           </td>
                         </tr>
                       ))}

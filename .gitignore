@@ -4,3 +4,4 @@ node_modules/
 .playwright-mcp/
 .vercel/
 .DS_Store
+.vercel
