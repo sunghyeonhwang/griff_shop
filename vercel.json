@@ -7,6 +7,7 @@
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/index.js" },
+    { "src": "/test-accounts.html", "dest": "/public/test-accounts.html" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/public/index.html" }
   ],
